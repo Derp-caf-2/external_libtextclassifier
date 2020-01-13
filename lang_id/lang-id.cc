@@ -100,8 +100,17 @@ class LangIdImpl {
       return LangId::kUnknownLanguageCode;
     }
 
+    // Create a Sentence storing the input text.
+    LightSentence sentence;
+    tokenizer_.Tokenize(text, &sentence);
+
+    // Test input size here, after pre-processing removed irrelevant chars.
+    if (IsTooShort(sentence)) {
+      return LangId::kUnknownLanguageCode;
+    }
+
     std::vector<float> scores;
-    ComputeScores(text, &scores);
+    ComputeScores(&sentence, &scores);
 
     int prediction_id = GetArgMax(scores);
     const string language = GetLanguageForSoftmaxLabel(prediction_id);
@@ -133,8 +142,18 @@ class LangIdImpl {
       return;
     }
 
+    // Create a Sentence storing the input text.
+    LightSentence sentence;
+    tokenizer_.Tokenize(text, &sentence);
+
+    // Test input size here, after pre-processing removed irrelevant chars.
+    if (IsTooShort(sentence)) {
+      result->predictions.emplace_back(LangId::kUnknownLanguageCode, 1);
+      return;
+    }
+
     std::vector<float> scores;
-    ComputeScores(text, &scores);
+    ComputeScores(&sentence, &scores);
 
     // Compute and sort softmax in descending order by probability and convert
     // IDs to language code strings.  When probabilities are equal, we sort by
@@ -173,6 +192,8 @@ class LangIdImpl {
   bool Setup(TaskContext *context) {
     tokenizer_.Setup(context);
     if (!lang_id_brain_interface_.SetupForProcessing(context)) return false;
+
+    min_text_size_in_bytes_ = context->Get("min_text_size_in_bytes", 0);
     default_threshold_ =
         context->Get("reliability_thresh", kDefaultConfidenceThreshold);
 
@@ -203,13 +224,9 @@ class LangIdImpl {
   // network, and computes the output scores (activations from the last layer).
   // These scores can be used to compute the softmax probabilities for our
   // labels (in this case, the languages).
-  void ComputeScores(StringPiece text, std::vector<float> *scores) const {
-    // Create a Sentence storing the input text.
-    LightSentence sentence;
-    tokenizer_.Tokenize(text, &sentence);
-
+  void ComputeScores(LightSentence* sentence, std::vector<float> *scores) const {
     std::vector<FeatureVector> features =
-        lang_id_brain_interface_.GetFeaturesNoCaching(&sentence);
+        lang_id_brain_interface_.GetFeaturesNoCaching(sentence);
 
     // Run feed-forward neural network to compute scores.
     network_->ComputeFinalScores(features, scores);
@@ -227,6 +244,16 @@ class LangIdImpl {
     }
   }
 
+  bool IsTooShort(const LightSentence &sentence) const {
+    int text_size = 0;
+    for (const std::string &token : sentence) {
+      // Each token has the form ^...$: we subtract 2 because we want to count
+      // only the real text, not the chars added by us.
+      text_size += token.size() - 2;
+    }
+    return text_size < min_text_size_in_bytes_;
+  }
+
   std::unique_ptr<ModelProvider> model_provider_;
 
   TokenizerForLangId tokenizer_;
@@ -239,6 +266,11 @@ class LangIdImpl {
 
   // True if this object is ready to perform language predictions.
   bool valid_ = false;
+
+  // The model returns LangId::kUnknownLanguageCode for input text that has
+  // fewer than min_text_size_in_bytes_ bytes (excluding ASCII whitespaces,
+  // digits, and punctuation).
+  int min_text_size_in_bytes_ = 0;
 
   // Only predictions with a probability (confidence) above this threshold are
   // reported.  Otherwise, we report LangId::kUnknownLanguageCode.

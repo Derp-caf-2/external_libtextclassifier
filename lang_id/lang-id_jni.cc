@@ -44,10 +44,14 @@ jobjectArray LangIdResultToJObjectArray(JNIEnv* env,
     return nullptr;
   }
 
-  // clang-format off
-  const std::vector<std::pair<std::string, float>>& predictions =
-      lang_id_result.predictions;
-  // clang-format on
+  std::vector<std::pair<std::string, float>> predictions;
+  std::copy_if(lang_id_result.predictions.begin(),
+               lang_id_result.predictions.end(),
+               std::back_inserter(predictions),
+               [](std::pair<std::string, float> pair) {
+                 return pair.first != "und";
+               });
+
   const jmethodID result_class_constructor =
       env->GetMethodID(result_class.get(), "<init>", "(Ljava/lang/String;F)V");
   const jobjectArray results =
